@@ -17,7 +17,7 @@ from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 
 import firebase_admin
-from firebase_admin import auth as fb_auth, credentials
+from firebase_admin import auth as fb_auth, credentials, firestore as admin_firestore
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO)
@@ -91,11 +91,15 @@ def init_firebase() -> None:
 try:
     init_firebase()
 except Exception as e:
-    # In production you want this to fail fast; if you are running locally for tests,
-    # you can set SERVICE_ACCOUNT_JSON or place the JSON file. We re-raise to make the
-    # missing configuration obvious.
     logger.exception("Firebase initialization failed")
     raise
+
+# create admin firestore client
+try:
+    db_admin = admin_firestore.client()
+except Exception as e:
+    logger.exception("Failed to create admin firestore client")
+    db_admin = None
 
 # --- Crypto helpers ---
 def ensure_salt() -> bytes:
@@ -195,7 +199,7 @@ def download_template():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    # Verify Authorization header (Firebase idToken)
+    # Verify Authorization header (Firebase idToken) - required
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return jsonify({"ok": False, "msg": "Authorization header missing or malformed"}), 401
@@ -204,13 +208,15 @@ def upload():
     if not valid_token:
         return jsonify({"ok": False, "msg": "Invalid idToken", "detail": token_info}), 401
 
-    # reCAPTCHA token validation
+    # reCAPTCHA token validation (optional if idToken present)
     recaptcha_token = request.form.get("recaptcha") or request.files.get("recaptcha")
-    if not recaptcha_token:
-        return jsonify({"ok": False, "msg": "recaptcha token missing"}), 400
-    ok, details = verify_recaptcha_token(recaptcha_token, request.remote_addr)
-    if not ok:
-        return jsonify({"ok": False, "msg": "reCAPTCHA validation failed", "details": details}), 400
+    if recaptcha_token:
+        ok, details = verify_recaptcha_token(recaptcha_token, request.remote_addr)
+        if not ok:
+            return jsonify({"ok": False, "msg": "reCAPTCHA validation failed", "details": details}), 400
+    else:
+        # no reCAPTCHA provided — allow if idToken is valid (you may change this policy)
+        logger.info("No reCAPTCHA token provided; proceeding because idToken was valid")
 
     # file
     if "file" not in request.files:
@@ -234,30 +240,48 @@ def upload():
 
     key = derive_key_from_password(admin_pass)
 
-    processed = []
-    for _, row in df.iterrows():
-        dni_raw = str(row["DNI"]).strip()
-        ubic = str(row.get("UBICACION", "")).strip()
-        dni_enc = encrypt_aes_gcm(dni_raw, key)
-        ubic_enc = encrypt_aes_gcm(ubic, key) if ubic else ""
-        processed.append(
-            {
-                "DNI_enc": dni_enc,
-                "NOMBRES": row.get("NOMBRES", ""),
-                "APELLIDOS": row.get("APELLIDOS", ""),
-                "FECHA_NAC": str(row.get("FECHA_NAC", "")),
-                "DPTO": row.get("DPTO", ""),
-                "CORREO": row.get("CORREO", ""),
-                "TELEFONO": row.get("TELEFONO", ""),
-                "UBICACION_enc": ubic_enc,
-            }
-        )
+    if db_admin is None:
+        logger.error("Firestore admin client unavailable")
+        return jsonify({"ok": False, "msg": "Server error: Firestore admin client unavailable"}), 500
 
-    # In production you would store records in a DB; here we return a preview
-    return jsonify({"ok": True, "msg": f"{len(processed)} records processed and encrypted", "preview": processed})
+    processed = []
+    success = 0
+    failed = 0
+    for _, row in df.iterrows():
+        try:
+            dni_raw = str(row["DNI"]).strip()
+            ubic = str(row.get("UBICACION", "")).strip()
+            dni_enc = encrypt_aes_gcm(dni_raw, key) if dni_raw != '' else ''
+            ubic_enc = encrypt_aes_gcm(ubic, key) if ubic else ""
+            doc_obj = {
+                "DNI_enc": dni_enc,
+                "NOMBRES": str(row.get("NOMBRES", "") or ""),
+                "APELLIDOS": str(row.get("APELLIDOS", "") or ""),
+                "FECHA_NAC": str(row.get("FECHA_NAC", "") or ""),
+                "DPTO": str(row.get("DPTO", "") or ""),
+                "CORREO": str(row.get("CORREO", "") or ""),
+                "TELEFONO": str(row.get("TELEFONO", "") or ""),
+                "UBICACION_enc": ubic_enc,
+                "createdAt": admin_firestore.SERVER_TIMESTAMP
+            }
+            # Guarda con Firestore Admin (colección 'Usuarios')
+            db_admin.collection("Usuarios").add(doc_obj)
+            processed.append(doc_obj)
+            success += 1
+        except Exception as e:
+            logger.exception("Error processing/saving row")
+            failed += 1
+            # continúa con el siguiente
+
+    return jsonify({
+        "ok": True,
+        "msg": f"{success} records processed and encrypted, {failed} failed",
+        "preview": processed
+    })
 
 # --- Run ---
 if __name__ == "__main__":
     # When running locally you can set PORT in env or default to 5000
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
