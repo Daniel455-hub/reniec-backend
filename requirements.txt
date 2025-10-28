@@ -1,1 +1,7 @@
-firebase_functions~=0.1.0
+Flask==2.3.2
+flask-cors==3.0.10
+pandas==2.1.2
+pycryptodome==3.18.0
+openpyxl==3.1.2
+firebase-admin==6.0.1
+requests==2.31.0
