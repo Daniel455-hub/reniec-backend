@@ -36,19 +36,12 @@ SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "serviceAccountKey.json")
 
 # --- Flask app ---
 app = Flask(__name__)
-# Allow all origins in development; restrict in production via env if desired
 cors_origins = os.getenv("CORS_ORIGINS", "*")
 CORS(app, resources={r"/*": {"origins": cors_origins}})
 app.secret_key = secrets.token_hex(32)
 
 # --- Firebase initialization ---
 def init_firebase() -> None:
-    """
-    Initialize Firebase admin SDK using either:
-      - JSON string provided in SERVICE_ACCOUNT_JSON env var, or
-      - JSON file at SERVICE_ACCOUNT_PATH
-    Raises FileNotFoundError if neither is present.
-    """
     if firebase_admin._apps:
         logger.info("Firebase already initialized")
         return
@@ -69,7 +62,6 @@ def init_firebase() -> None:
             logger.exception("Failed to initialize Firebase from SERVICE_ACCOUNT_JSON")
             raise
 
-    # fallback: try file on disk
     if os.path.exists(SERVICE_ACCOUNT_PATH):
         logger.info("Initializing Firebase from serviceAccountKey.json file")
         try:
@@ -81,20 +73,18 @@ def init_firebase() -> None:
             logger.exception("Failed to initialize Firebase from file")
             raise
 
-    # if we reach here, no credentials available
     raise FileNotFoundError(
         f"Firebase service account not found. Provide SERVICE_ACCOUNT_JSON env var "
         f"or place serviceAccountKey.json at: {SERVICE_ACCOUNT_PATH}"
     )
 
-# Try to initialize Firebase now (will raise if not provided)
 try:
     init_firebase()
 except Exception as e:
     logger.exception("Firebase initialization failed")
     raise
 
-# create admin firestore client
+# admin firestore client
 try:
     db_admin = admin_firestore.client()
 except Exception as e:
@@ -215,7 +205,6 @@ def upload():
         if not ok:
             return jsonify({"ok": False, "msg": "reCAPTCHA validation failed", "details": details}), 400
     else:
-        # no reCAPTCHA provided — allow if idToken is valid (you may change this policy)
         logger.info("No reCAPTCHA token provided; proceeding because idToken was valid")
 
     # file
@@ -249,29 +238,43 @@ def upload():
     failed = 0
     for _, row in df.iterrows():
         try:
-            dni_raw = str(row["DNI"]).strip()
-            ubic = str(row.get("UBICACION", "")).strip()
+            # plaintext fields
+            nombres = str(row.get("NOMBRES", "") or "").strip()
+            apellidos = str(row.get("APELLIDOS", "") or "").strip()
+            correo = str(row.get("CORREO", "") or "").strip()
+
+            # fields to encrypt
+            dni_raw = str(row.get("DNI", "") or "").strip()
+            fecha_raw = str(row.get("FECHA_NAC", "") or "").strip()
+            dpto_raw = str(row.get("DPTO", "") or "").strip()
+            telefono_raw = str(row.get("TELEFONO", "") or "").strip()
+            ubic_raw = str(row.get("UBICACION", "") or "").strip()
+
             dni_enc = encrypt_aes_gcm(dni_raw, key) if dni_raw != '' else ''
-            ubic_enc = encrypt_aes_gcm(ubic, key) if ubic else ""
+            fecha_enc = encrypt_aes_gcm(fecha_raw, key) if fecha_raw != '' else ''
+            dpto_enc = encrypt_aes_gcm(dpto_raw, key) if dpto_raw != '' else ''
+            telefono_enc = encrypt_aes_gcm(telefono_raw, key) if telefono_raw != '' else ''
+            ubic_enc = encrypt_aes_gcm(ubic_raw, key) if ubic_raw != '' else ''
+
             doc_obj = {
                 "DNI_enc": dni_enc,
-                "NOMBRES": str(row.get("NOMBRES", "") or ""),
-                "APELLIDOS": str(row.get("APELLIDOS", "") or ""),
-                "FECHA_NAC": str(row.get("FECHA_NAC", "") or ""),
-                "DPTO": str(row.get("DPTO", "") or ""),
-                "CORREO": str(row.get("CORREO", "") or ""),
-                "TELEFONO": str(row.get("TELEFONO", "") or ""),
+                "NOMBRES": nombres,
+                "APELLIDOS": apellidos,
+                "FECHA_NAC_enc": fecha_enc,
+                "DPTO_enc": dpto_enc,
+                "CORREO": correo,
+                "TELEFONO_enc": telefono_enc,
                 "UBICACION_enc": ubic_enc,
                 "createdAt": admin_firestore.SERVER_TIMESTAMP
             }
-            # Guarda con Firestore Admin (colección 'Usuarios')
+
             db_admin.collection("Usuarios").add(doc_obj)
             processed.append(doc_obj)
             success += 1
         except Exception as e:
             logger.exception("Error processing/saving row")
             failed += 1
-            # continúa con el siguiente
+            # continue with next
 
     return jsonify({
         "ok": True,
@@ -281,7 +284,5 @@ def upload():
 
 # --- Run ---
 if __name__ == "__main__":
-    # When running locally you can set PORT in env or default to 5000
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
-
