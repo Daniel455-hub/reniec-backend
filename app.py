@@ -455,49 +455,95 @@ def decrypt_data():
 @app.route('/verify-admin', methods=['POST'])
 def verify_admin():
     try:
+        print("🔄 Iniciando verify-admin...")
+        
         # Aceptar cualquier variante del header Authorization
         auth_header = (
             request.headers.get('Authorization') or
             request.headers.get('authorization') or
-            request.headers.get('AUTHORIZATION')
+            request.headers.get('AUTHORIZATION') or
+            ''
         )
 
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return jsonify({"msg": "Token no enviado"}), 401
+        print(f"📨 Authorization Header recibido: {auth_header[:50]}...")
+
+        if not auth_header.startswith("Bearer "):
+            print("❌ Formato de header incorrecto")
+            return jsonify({
+                "msg": "Formato de Authorization header incorrecto",
+                "expected": "Bearer <token>", 
+                "received": auth_header[:100] + "..." if len(auth_header) > 100 else auth_header
+            }), 401
 
         # Extraer ID Token Firebase
-        id_token = auth_header.split(" ")[1]
-
+        id_token = auth_header.split(" ", 1)[1]
+        
         if not id_token:
-            return jsonify({"msg": "Token inválido o vacío"}), 401
+            print("❌ Token vacío")
+            return jsonify({"msg": "Token vacío"}), 401
+
+        print(f"🔐 Token a verificar (primeros 50 chars): {id_token[:50]}...")
 
         # Verificar token Firebase
         try:
             decoded_token = fb_auth.verify_id_token(id_token)
-            logger.info(f"Token verificado para usuario: {decoded_token.get('email', 'unknown')}")
+            user_email = decoded_token.get('email', 'No email')
+            user_id = decoded_token.get('uid', 'No UID')
+            print(f"✅ Token verificado - Email: {user_email}, UID: {user_id}")
+            
         except Exception as e:
-            logger.error(f"Error verificando token Firebase: {e}")
-            return jsonify({"msg": "Error verificando token Firebase"}), 401
+            print(f"❌ Error verificando token Firebase: {str(e)}")
+            return jsonify({
+                "msg": "Error verificando token Firebase",
+                "error": str(e)
+            }), 401
 
         # Obtener clave enviada por frontend
         data = request.get_json()
         if not data:
+            print("❌ No se recibieron datos JSON")
             return jsonify({"msg": "Datos JSON requeridos"}), 400
             
         admin_key = data.get('admin_key', '').strip()
+        print(f"🔑 Clave admin recibida: {'*' * len(admin_key)}")
 
-        # Verificar contra TU estructura Firestore
-        is_valid, msg = verify_admin_key(admin_key)
-        if not is_valid:
-            logger.warning(f"Intento fallido de verificación admin")
-            return jsonify({"msg": msg}), 401
+        if not admin_key:
+            print("❌ Clave admin vacía")
+            return jsonify({"msg": "Clave administradora requerida"}), 400
 
-        logger.info("Verificación admin exitosa")
+        # Verificar clave admin contra Firestore
+        try:
+            doc_ref = db_admin.collection('Permisos').document('Clave')
+            doc = doc_ref.get()
+            
+            if not doc.exists:
+                print("❌ Documento Permisos/Clave no encontrado")
+                return jsonify({"msg": "Configuración de permisos no encontrada"}), 500
+            
+            stored_key = doc.to_dict().get('Admin')
+            if not stored_key:
+                print("❌ Campo Admin vacío en Firestore")
+                return jsonify({"msg": "Clave administradora no configurada"}), 500
+
+            print(f"🔑 Clave almacenada: {'*' * len(stored_key)}")
+            
+            if admin_key != stored_key:
+                print("❌ Clave admin incorrecta")
+                return jsonify({"msg": "Clave administradora incorrecta"}), 401
+                
+        except Exception as e:
+            print(f"❌ Error accediendo a Firestore: {str(e)}")
+            return jsonify({"msg": "Error verificando credenciales"}), 500
+
+        print("✅ Verificación admin exitosa")
         return jsonify({"msg": "Acceso concedido"}), 200
 
     except Exception as e:
-        logger.exception("Error inesperado en verify-admin")
-        return jsonify({"msg": "Error verificando credenciales", "error": str(e)}), 500
+        print(f"💥 Error inesperado en verify-admin: {str(e)}")
+        return jsonify({
+            "msg": "Error interno del servidor", 
+            "error": str(e)
+        }), 500 
 
 # --- Endpoint para verificar estado de la configuración ---
 @app.route('/check-admin-config', methods=['GET'])
