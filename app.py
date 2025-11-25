@@ -375,6 +375,94 @@ def decrypt_data():
     except Exception as e:
         logger.exception("Error obteniendo datos")
         return jsonify({'ok': False, 'msg': f'Error obteniendo datos: {str(e)}'}), 500
+
+# Endpoint para obtener registros de monitoreo
+@app.route('/get-monitoring', methods=['GET'])
+def get_monitoring():
+    # Verificar Authorization header
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'ok': False, 'msg': 'Authorization header missing or malformed'}), 401
+    
+    id_token = auth_header.split(' ', 1)[1]
+    valid_token, token_info = verify_id_token(id_token)
+    if not valid_token:
+        return jsonify({'ok': False, 'msg': 'Invalid idToken', 'detail': token_info}), 401
+
+    # Verificar que sea administrador
+    data = request.get_json() or {}
+    admin_key = data.get('admin_key')
+    
+    if not admin_key:
+        return jsonify({'ok': False, 'msg': 'Clave administradora requerida'}), 400
+
+    try:
+        doc_ref = db_admin.collection('Permisos').doc('Clave')
+        doc = doc_ref.get()
+        
+        if not doc.exists or admin_key != doc.to_dict().get('Admin'):
+            return jsonify({'ok': False, 'msg': 'Clave administradora incorrecta'}), 401
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': 'Error verificando credenciales'}), 500
+
+    # Obtener registros de monitoreo
+    try:
+        monitoring_ref = db_admin.collection('Monitoreo').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100)
+        monitoring_snap = monitoring_ref.get()
+        
+        monitoring_data = []
+        for doc in monitoring_snap:
+            record = doc.to_dict()
+            record['id'] = doc.id
+            # Convertir timestamp a string legible
+            if 'timestamp' in record and hasattr(record['timestamp'], 'strftime'):
+                record['timestamp'] = record['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+            monitoring_data.append(record)
+        
+        return jsonify({
+            'ok': True,
+            'monitoringData': monitoring_data,
+            'total': len(monitoring_data)
+        })
+        
+    except Exception as e:
+        logger.exception("Error obteniendo datos de monitoreo")
+        return jsonify({'ok': False, 'msg': f'Error obteniendo monitoreo: {str(e)}'}), 500
+        
+
+# Endpoint para registrar acciones manualmente
+@app.route('/log-action', methods=['POST'])
+def log_action():
+    # Verificar Authorization header
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'ok': False, 'msg': 'Authorization header missing or malformed'}), 401
+    
+    id_token = auth_header.split(' ', 1)[1]
+    valid_token, token_info = verify_id_token(id_token)
+    if not valid_token:
+        return jsonify({'ok': False, 'msg': 'Invalid idToken', 'detail': token_info}), 401
+
+    data = request.get_json() or {}
+    action = data.get('action', 'UNKNOWN_ACTION')
+    details = data.get('details', '')
+    
+    try:
+        user_email = token_info.get('email', 'unknown')
+        monitor_data = {
+            'user_email': user_email,
+            'action': action,
+            'timestamp': firestore.SERVER_TIMESTAMP,
+            'details': details,
+            'ip': request.remote_addr
+        }
+        db_admin.collection('Monitoreo').add(monitor_data)
+        
+        return jsonify({'ok': True, 'msg': 'Acción registrada correctamente'})
+        
+    except Exception as e:
+        logger.error(f"Error registrando acción: {e}")
+        return jsonify({'ok': False, 'msg': f'Error registrando acción: {str(e)}'}), 500
         
 # --- Run ---
 if __name__ == "__main__":
