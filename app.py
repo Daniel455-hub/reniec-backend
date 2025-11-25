@@ -106,6 +106,8 @@ def derive_key_from_password(password: str) -> bytes:
     return PBKDF2(password.encode("utf-8"), salt, dkLen=32, count=PBKDF2_ITERS)
 
 def encrypt_aes_gcm(plaintext: str, key: bytes) -> str:
+    if not plaintext:
+        return ""
     plaintext_bytes = plaintext.encode("utf-8")
     nonce = get_random_bytes(12)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
@@ -114,13 +116,19 @@ def encrypt_aes_gcm(plaintext: str, key: bytes) -> str:
     return base64.b64encode(combined).decode("utf-8")
 
 def decrypt_aes_gcm(b64_combined: str, key: bytes) -> str:
-    combined = base64.b64decode(b64_combined)
-    nonce = combined[0:12]
-    tag = combined[12:28]
-    ciphertext = combined[28:]
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
-    return plaintext.decode("utf-8")
+    if not b64_combined:
+        return ""
+    try:
+        combined = base64.b64decode(b64_combined)
+        nonce = combined[0:12]
+        tag = combined[12:28]
+        ciphertext = combined[28:]
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+        return plaintext.decode("utf-8")
+    except Exception as e:
+        logger.error(f"Error decrypting data: {e}")
+        return ""
 
 # --- reCAPTCHA verification ---
 def verify_recaptcha_token(token: str, remoteip: str = None) -> Tuple[bool, dict]:
@@ -271,6 +279,18 @@ def upload():
             db_admin.collection("Usuarios").add(doc_obj)
             processed.append(doc_obj)
             success += 1
+            
+            # Registrar en monitoreo
+            user_email = token_info.get('email', 'unknown')
+            monitor_data = {
+                'user_email': user_email,
+                'action': 'CARGA_USUARIOS',
+                'timestamp': firestore.SERVER_TIMESTAMP,
+                'details': f'Cargó usuario: {nombres} {apellidos} - {correo}',
+                'ip': request.remote_addr
+            }
+            db_admin.collection('Monitoreo').add(monitor_data)
+            
         except Exception as e:
             logger.exception("Error processing/saving row")
             failed += 1
@@ -320,9 +340,9 @@ def decrypt_data():
         user_email = token_info.get('email', 'unknown')
         monitor_data = {
             'user_email': user_email,
-            'action': 'ACCESS_DECRYPTED_DATA',
+            'action': 'ACCESO_DATOS_DESCIFRADOS',
             'timestamp': firestore.SERVER_TIMESTAMP,
-            'details': 'Acceso a datos descifrados - Verificación exitosa',
+            'details': 'Accedió a ver los datos descifrados de todos los usuarios',
             'ip': request.remote_addr
         }
         db_admin.collection('Monitoreo').add(monitor_data)
@@ -334,7 +354,7 @@ def decrypt_data():
     try:
         users_snap = db_admin.collection('Usuarios').get()
         
-        # Derivar la clave para descifrar
+        # Derivar la clave para descifrar usando la misma contraseña de administrador
         key = derive_key_from_password(admin_key)
         
         decrypted_data = []
@@ -345,11 +365,11 @@ def decrypt_data():
             
             try:
                 # Descifrar los campos cifrados
-                dni_dec = decrypt_aes_gcm(user_data['DNI_enc'], key) if user_data.get('DNI_enc') else ''
-                fecha_dec = decrypt_aes_gcm(user_data['FECHA_NAC_enc'], key) if user_data.get('FECHA_NAC_enc') else ''
-                dpto_dec = decrypt_aes_gcm(user_data['DPTO_enc'], key) if user_data.get('DPTO_enc') else ''
-                telefono_dec = decrypt_aes_gcm(user_data['TELEFONO_enc'], key) if user_data.get('TELEFONO_enc') else ''
-                ubic_dec = decrypt_aes_gcm(user_data['UBICACION_enc'], key) if user_data.get('UBICACION_enc') else ''
+                dni_dec = decrypt_aes_gcm(user_data.get('DNI_enc', ''), key)
+                fecha_dec = decrypt_aes_gcm(user_data.get('FECHA_NAC_enc', ''), key)
+                dpto_dec = decrypt_aes_gcm(user_data.get('DPTO_enc', ''), key)
+                telefono_dec = decrypt_aes_gcm(user_data.get('TELEFONO_enc', ''), key)
+                ubic_dec = decrypt_aes_gcm(user_data.get('UBICACION_enc', ''), key)
                 
                 decrypted_user = {
                     'id': doc.id,
@@ -388,7 +408,7 @@ def decrypt_data():
         return jsonify({'ok': False, 'msg': f'Error obteniendo datos: {str(e)}'}), 500
 
 # Endpoint para obtener registros de monitoreo
-@app.route('/get-monitoring', methods=['GET'])
+@app.route('/get-monitoring', methods=['POST'])
 def get_monitoring():
     # Verificar Authorization header
     auth_header = request.headers.get('Authorization', '')
@@ -418,7 +438,7 @@ def get_monitoring():
 
     # Obtener registros de monitoreo
     try:
-        monitoring_ref = db_admin.collection('Monitoreo').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100)
+        monitoring_ref = db_admin.collection('Monitoreo').order_by('timestamp', direction=firestore.Query.DESCENDING)
         monitoring_snap = monitoring_ref.get()
         
         monitoring_data = []
@@ -427,6 +447,9 @@ def get_monitoring():
             record['id'] = doc.id
             # Convertir timestamp a string legible
             if 'timestamp' in record and hasattr(record['timestamp'], 'strftime'):
+                record['timestamp'] = record['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+            elif 'timestamp' in record:
+                # Si es un objeto Timestamp de Firestore
                 record['timestamp'] = record['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
             monitoring_data.append(record)
         
@@ -474,6 +497,54 @@ def log_action():
     except Exception as e:
         logger.error(f"Error registrando acción: {e}")
         return jsonify({'ok': False, 'msg': f'Error registrando acción: {str(e)}'}), 500
+
+# Endpoint para verificar permisos
+@app.route('/verify-admin', methods=['POST'])
+def verify_admin():
+    # Verificar Authorization header
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'ok': False, 'msg': 'Authorization header missing or malformed'}), 401
+    
+    id_token = auth_header.split(' ', 1)[1]
+    valid_token, token_info = verify_id_token(id_token)
+    if not valid_token:
+        return jsonify({'ok': False, 'msg': 'Invalid idToken', 'detail': token_info}), 401
+
+    data = request.get_json() or {}
+    admin_key = data.get('admin_key')
+    
+    if not admin_key:
+        return jsonify({'ok': False, 'msg': 'Clave administradora requerida'}), 400
+
+    # Verificar clave administradora
+    try:
+        doc_ref = db_admin.collection('Permisos').doc('Clave')
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return jsonify({'ok': False, 'msg': 'Configuración de permisos no encontrada'}), 500
+        
+        stored_key = doc.to_dict().get('Admin')
+        if admin_key != stored_key:
+            return jsonify({'ok': False, 'msg': 'Clave administradora incorrecta'}), 401
+            
+        # Registrar verificación exitosa
+        user_email = token_info.get('email', 'unknown')
+        monitor_data = {
+            'user_email': user_email,
+            'action': 'VERIFICACION_CLAVE_ADMIN',
+            'timestamp': firestore.SERVER_TIMESTAMP,
+            'details': 'Verificación exitosa de clave administrativa',
+            'ip': request.remote_addr
+        }
+        db_admin.collection('Monitoreo').add(monitor_data)
+        
+        return jsonify({'ok': True, 'msg': 'Clave verificada correctamente'})
+        
+    except Exception as e:
+        logger.exception("Error verificando clave administradora")
+        return jsonify({'ok': False, 'msg': 'Error verificando credenciales'}), 500
         
 # --- Run ---
 if __name__ == "__main__":
