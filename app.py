@@ -501,50 +501,48 @@ def log_action():
 # Endpoint para verificar permisos
 @app.route('/verify-admin', methods=['POST'])
 def verify_admin():
-    # Verificar Authorization header
-    auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
-        return jsonify({'ok': False, 'msg': 'Authorization header missing or malformed'}), 401
-    
-    id_token = auth_header.split(' ', 1)[1]
-    valid_token, token_info = verify_id_token(id_token)
-    if not valid_token:
-        return jsonify({'ok': False, 'msg': 'Invalid idToken', 'detail': token_info}), 401
-
-    data = request.get_json() or {}
-    admin_key = data.get('admin_key')
-    
-    if not admin_key:
-        return jsonify({'ok': False, 'msg': 'Clave administradora requerida'}), 400
-
-    # Verificar clave administradora
     try:
-        doc_ref = db_admin.collection('Permisos').doc('Clave')
-        doc = doc_ref.get()
-        
-        if not doc.exists:
-            return jsonify({'ok': False, 'msg': 'Configuración de permisos no encontrada'}), 500
-        
-        stored_key = doc.to_dict().get('Admin')
-        if admin_key != stored_key:
-            return jsonify({'ok': False, 'msg': 'Clave administradora incorrecta'}), 401
-            
-        # Registrar verificación exitosa
-        user_email = token_info.get('email', 'unknown')
-        monitor_data = {
-            'user_email': user_email,
-            'action': 'VERIFICACION_CLAVE_ADMIN',
-            'timestamp': firestore.SERVER_TIMESTAMP,
-            'details': 'Verificación exitosa de clave administrativa',
-            'ip': request.remote_addr
-        }
-        db_admin.collection('Monitoreo').add(monitor_data)
-        
-        return jsonify({'ok': True, 'msg': 'Clave verificada correctamente'})
-        
+        # Aceptar cualquier variante del header Authorization
+        auth_header = (
+            request.headers.get('Authorization') or
+            request.headers.get('authorization') or
+            request.headers.get('AUTHORIZATION')
+        )
+
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"msg": "Token no enviado"}), 401
+
+        # Extraer ID Token Firebase
+        id_token = auth_header.split(" ")[1]
+
+        if not id_token:
+            return jsonify({"msg": "Token inválido o vacío"}), 401
+
+        # Verificar token Firebase
+        try:
+            decoded_token = auth.verify_id_token(id_token)
+        except Exception as e:
+            return jsonify({"msg": "Error verificando token Firebase"}), 401
+
+        # Obtener clave enviada por frontend
+        data = request.get_json()
+        admin_key = data.get('admin_key', '').strip()
+
+        # Clave real almacenada
+        ADMIN_KEY = os.getenv("ADMIN_KEY")
+
+        if not ADMIN_KEY:
+            return jsonify({"msg": "No existe ADMIN_KEY en el servidor"}), 500
+
+        # Verificar credenciales
+        if admin_key != ADMIN_KEY:
+            return jsonify({"msg": "Credenciales incorrectas"}), 401
+
+        return jsonify({"msg": "Acceso concedido"}), 200
+
     except Exception as e:
-        logger.exception("Error verificando clave administradora")
-        return jsonify({'ok': False, 'msg': 'Error verificando credenciales'}), 500
+        return jsonify({"msg": "Error verificando credenciales", "error": str(e)}), 500
+
         
 # --- Run ---
 if __name__ == "__main__":
