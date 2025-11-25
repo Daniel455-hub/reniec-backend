@@ -320,8 +320,8 @@ def decrypt_data():
         # Derivar clave de cifrado
         key = derive_key_from_password(admin_key)
         
-        # Obtener todos los usuarios
-        users_ref = db_admin.collection('Usuarios').orderBy('createdAt', 'desc')
+        # CORRECCIÓN: usar order_by en lugar de orderBy
+        users_ref = db_admin.collection('Usuarios').order_by('createdAt', direction=firestore.Query.DESCENDING)
         users_snap = users_ref.get()
         
         decrypted_data = []
@@ -340,27 +340,38 @@ def decrypt_data():
                 dni_enc = user_data.get('DNI_enc', '')
                 if dni_enc:
                     decrypted_user['DNI'] = decrypt_aes_gcm(dni_enc, key)
+                else:
+                    decrypted_user['DNI'] = ''
                 
                 fecha_enc = user_data.get('FECHA_NAC_enc', '')
                 if fecha_enc:
                     decrypted_user['FECHA_NAC'] = decrypt_aes_gcm(fecha_enc, key)
+                else:
+                    decrypted_user['FECHA_NAC'] = ''
                 
                 dpto_enc = user_data.get('DPTO_enc', '')
                 if dpto_enc:
                     decrypted_user['DPTO'] = decrypt_aes_gcm(dpto_enc, key)
+                else:
+                    decrypted_user['DPTO'] = ''
                 
                 telefono_enc = user_data.get('TELEFONO_enc', '')
                 if telefono_enc:
                     decrypted_user['TELEFONO'] = decrypt_aes_gcm(telefono_enc, key)
+                else:
+                    decrypted_user['TELEFONO'] = ''
                 
                 ubicacion_enc = user_data.get('UBICACION_enc', '')
                 if ubicacion_enc:
                     decrypted_user['UBICACION'] = decrypt_aes_gcm(ubicacion_enc, key)
+                else:
+                    decrypted_user['UBICACION'] = ''
                 
                 decrypted_data.append(decrypted_user)
                 
             except Exception as e:
                 logger.warning(f"Error descifrando usuario {doc.id}: {e}")
+                # Continuar con el siguiente usuario incluso si hay error
                 continue
         
         return jsonify({
