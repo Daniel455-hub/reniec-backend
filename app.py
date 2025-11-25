@@ -30,7 +30,8 @@ SALT_SIZE = 16
 PBKDF2_ITERS = 200_000
 
 RECAPTCHA_SECRET = os.getenv("RECAPTCHA_SECRET", "YOUR_FALLBACK_SECRET")
-ADMIN_PASS = os.getenv("ADMIN_PASS")  # must be set in production
+# SOLUCIÓN: Usar solo una variable para la clave admin
+ADMIN_KEY = os.getenv("ADMIN_KEY", "clave_admin_por_defecto")  # Cambiado a ADMIN_KEY
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "serviceAccountKey.json")
 
@@ -158,6 +159,20 @@ def verify_id_token(id_token: str) -> Tuple[bool, dict | str]:
         logger.exception("Failed to verify Firebase idToken")
         return False, str(e)
 
+# --- Función centralizada para verificar clave admin ---
+def verify_admin_key(admin_key: str) -> Tuple[bool, str]:
+    """
+    Verifica la clave administradora contra la variable de entorno ADMIN_KEY
+    """
+    if not admin_key:
+        return False, "Clave administradora requerida"
+    
+    # SOLUCIÓN: Verificar solo contra la variable de entorno
+    if admin_key != ADMIN_KEY:
+        return False, "Clave administradora incorrecta"
+    
+    return True, "Clave válida"
+
 # --- Endpoints ---
 @app.route("/healthz")
 def healthz():
@@ -230,12 +245,12 @@ def upload():
     if missing:
         return jsonify({"ok": False, "msg": f"Missing columns: {missing}"}), 400
 
-    admin_pass = ADMIN_PASS
-    if not admin_pass:
-        logger.error("ADMIN_PASS is not set in environment")
-        return jsonify({"ok": False, "msg": "ADMIN_PASS not set on server"}), 500
+    # SOLUCIÓN: Usar ADMIN_KEY en lugar de ADMIN_PASS
+    if not ADMIN_KEY:
+        logger.error("ADMIN_KEY is not set in environment")
+        return jsonify({"ok": False, "msg": "ADMIN_KEY not set on server"}), 500
 
-    key = derive_key_from_password(admin_pass)
+    key = derive_key_from_password(ADMIN_KEY)  # Cambiado a ADMIN_KEY
 
     if db_admin is None:
         logger.error("Firestore admin client unavailable")
@@ -317,23 +332,10 @@ def decrypt_data():
     data = request.get_json() or {}
     admin_key = data.get('admin_key')
     
-    if not admin_key:
-        return jsonify({'ok': False, 'msg': 'Clave administradora requerida'}), 400
-
-    # Verificar clave administradora
-    try:
-        doc_ref = db_admin.collection('Permisos').doc('Clave')
-        doc = doc_ref.get()
-        
-        if not doc.exists:
-            return jsonify({'ok': False, 'msg': 'Configuración de permisos no encontrada'}), 500
-        
-        stored_key = doc.to_dict().get('Admin')
-        if admin_key != stored_key:
-            return jsonify({'ok': False, 'msg': 'Clave administradora incorrecta'}), 401
-    except Exception as e:
-        logger.exception("Error verificando clave administradora")
-        return jsonify({'ok': False, 'msg': 'Error verificando credenciales'}), 500
+    # SOLUCIÓN: Usar la función centralizada de verificación
+    is_valid, msg = verify_admin_key(admin_key)
+    if not is_valid:
+        return jsonify({'ok': False, 'msg': msg}), 401
 
     # Registrar acceso en Monitoreo
     try:
@@ -424,17 +426,10 @@ def get_monitoring():
     data = request.get_json() or {}
     admin_key = data.get('admin_key')
     
-    if not admin_key:
-        return jsonify({'ok': False, 'msg': 'Clave administradora requerida'}), 400
-
-    try:
-        doc_ref = db_admin.collection('Permisos').doc('Clave')
-        doc = doc_ref.get()
-        
-        if not doc.exists or admin_key != doc.to_dict().get('Admin'):
-            return jsonify({'ok': False, 'msg': 'Clave administradora incorrecta'}), 401
-    except Exception as e:
-        return jsonify({'ok': False, 'msg': 'Error verificando credenciales'}), 500
+    # SOLUCIÓN: Usar la función centralizada
+    is_valid, msg = verify_admin_key(admin_key)
+    if not is_valid:
+        return jsonify({'ok': False, 'msg': msg}), 401
 
     # Obtener registros de monitoreo
     try:
@@ -520,27 +515,30 @@ def verify_admin():
 
         # Verificar token Firebase
         try:
-            decoded_token = auth.verify_id_token(id_token)
+            decoded_token = fb_auth.verify_id_token(id_token)
+            logger.info(f"Token verificado para usuario: {decoded_token.get('email', 'unknown')}")
         except Exception as e:
+            logger.error(f"Error verificando token Firebase: {e}")
             return jsonify({"msg": "Error verificando token Firebase"}), 401
 
         # Obtener clave enviada por frontend
         data = request.get_json()
+        if not data:
+            return jsonify({"msg": "Datos JSON requeridos"}), 400
+            
         admin_key = data.get('admin_key', '').strip()
 
-        # Clave real almacenada
-        ADMIN_KEY = os.getenv("ADMIN_KEY")
+        # SOLUCIÓN: Usar la función centralizada de verificación
+        is_valid, msg = verify_admin_key(admin_key)
+        if not is_valid:
+            logger.warning(f"Intento fallido de verificación admin con clave: {admin_key}")
+            return jsonify({"msg": msg}), 401
 
-        if not ADMIN_KEY:
-            return jsonify({"msg": "No existe ADMIN_KEY en el servidor"}), 500
-
-        # Verificar credenciales
-        if admin_key != ADMIN_KEY:
-            return jsonify({"msg": "Credenciales incorrectas"}), 401
-
+        logger.info("Verificación admin exitosa")
         return jsonify({"msg": "Acceso concedido"}), 200
 
     except Exception as e:
+        logger.exception("Error inesperado en verify-admin")
         return jsonify({"msg": "Error verificando credenciales", "error": str(e)}), 500
 
         
