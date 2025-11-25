@@ -1,4 +1,4 @@
-# app.py
+# app.py - VERSIÓN CON TU ESTRUCTURA FIRESTORE
 import os
 import json
 import logging
@@ -30,8 +30,7 @@ SALT_SIZE = 16
 PBKDF2_ITERS = 200_000
 
 RECAPTCHA_SECRET = os.getenv("RECAPTCHA_SECRET", "YOUR_FALLBACK_SECRET")
-# SOLUCIÓN: Usar solo una variable para la clave admin
-ADMIN_KEY = os.getenv("ADMIN_KEY", "clave_admin_por_defecto")  # Cambiado a ADMIN_KEY
+# NO usamos variables de entorno para la clave admin
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 SERVICE_ACCOUNT_PATH = os.path.join(BASE_DIR, "serviceAccountKey.json")
 
@@ -131,6 +130,57 @@ def decrypt_aes_gcm(b64_combined: str, key: bytes) -> str:
         logger.error(f"Error decrypting data: {e}")
         return ""
 
+# --- Función para obtener clave admin desde TU estructura Firestore ---
+def get_admin_key_from_firestore() -> Tuple[bool, str]:
+    """
+    Obtiene la clave administradora desde Permisos/Clave/Admin
+    """
+    if not db_admin:
+        return False, "Error de servidor: Base de datos no disponible"
+    
+    try:
+        # Obtener la clave almacenada en TU estructura Firestore
+        doc_ref = db_admin.collection('Permisos').document('Clave')
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            logger.error("Documento Permisos/Clave no encontrado en Firestore")
+            return False, "Configuración de permisos no encontrada"
+        
+        admin_data = doc.to_dict()
+        admin_key = admin_data.get('Admin', '')
+        
+        if not admin_key:
+            logger.error("Campo Admin vacío en Permisos/Clave")
+            return False, "Clave administradora no configurada en Firestore"
+        
+        return True, admin_key
+        
+    except Exception as e:
+        logger.exception("Error obteniendo clave admin desde Firestore")
+        return False, f"Error del servidor: {str(e)}"
+
+# --- Función para verificar clave admin ingresada ---
+def verify_admin_key(admin_key: str) -> Tuple[bool, str]:
+    """
+    Verifica la clave administradora ingresada contra Firestore
+    """
+    if not admin_key:
+        return False, "Clave administradora requerida"
+    
+    # Obtener la clave real desde Firestore
+    success, stored_admin_key = get_admin_key_from_firestore()
+    if not success:
+        return False, stored_admin_key  # stored_admin_key contiene el mensaje de error
+    
+    # Verificar la clave
+    if admin_key != stored_admin_key:
+        logger.warning("Intento fallido de autenticación admin")
+        return False, "Clave administradora incorrecta"
+    
+    logger.info("Autenticación admin exitosa")
+    return True, "Clave válida"
+
 # --- reCAPTCHA verification ---
 def verify_recaptcha_token(token: str, remoteip: str = None) -> Tuple[bool, dict]:
     url = "https://www.google.com/recaptcha/api/siteverify"
@@ -158,20 +208,6 @@ def verify_id_token(id_token: str) -> Tuple[bool, dict | str]:
     except Exception as e:
         logger.exception("Failed to verify Firebase idToken")
         return False, str(e)
-
-# --- Función centralizada para verificar clave admin ---
-def verify_admin_key(admin_key: str) -> Tuple[bool, str]:
-    """
-    Verifica la clave administradora contra la variable de entorno ADMIN_KEY
-    """
-    if not admin_key:
-        return False, "Clave administradora requerida"
-    
-    # SOLUCIÓN: Verificar solo contra la variable de entorno
-    if admin_key != ADMIN_KEY:
-        return False, "Clave administradora incorrecta"
-    
-    return True, "Clave válida"
 
 # --- Endpoints ---
 @app.route("/healthz")
@@ -245,19 +281,25 @@ def upload():
     if missing:
         return jsonify({"ok": False, "msg": f"Missing columns: {missing}"}), 400
 
-    # SOLUCIÓN: Usar ADMIN_KEY en lugar de ADMIN_PASS
-    if not ADMIN_KEY:
-        logger.error("ADMIN_KEY is not set in environment")
-        return jsonify({"ok": False, "msg": "ADMIN_KEY not set on server"}), 500
+    # Obtener clave admin desde TU estructura Firestore para encriptación
+    try:
+        success, admin_key = get_admin_key_from_firestore()
+        if not success:
+            logger.error(f"Error obteniendo clave admin: {admin_key}")
+            return jsonify({"ok": False, "msg": "Error de configuración del servidor"}), 500
+            
+        key = derive_key_from_password(admin_key)
 
-    key = derive_key_from_password(ADMIN_KEY)  # Cambiado a ADMIN_KEY
+    except Exception as e:
+        logger.exception("Error obteniendo clave admin desde Firestore")
+        return jsonify({"ok": False, "msg": "Error del servidor obteniendo configuración"}), 500
 
     if db_admin is None:
         logger.error("Firestore admin client unavailable")
         return jsonify({"ok": False, "msg": "Server error: Firestore admin client unavailable"}), 500
 
     processed = []
-    success = 0
+    success_count = 0
     failed = 0
     for _, row in df.iterrows():
         try:
@@ -293,7 +335,7 @@ def upload():
 
             db_admin.collection("Usuarios").add(doc_obj)
             processed.append(doc_obj)
-            success += 1
+            success_count += 1
             
             # Registrar en monitoreo
             user_email = token_info.get('email', 'unknown')
@@ -313,7 +355,7 @@ def upload():
 
     return jsonify({
         "ok": True,
-        "msg": f"{success} records processed and encrypted, {failed} failed",
+        "msg": f"{success_count} records processed and encrypted, {failed} failed",
         "preview": processed
     })
 
@@ -332,7 +374,7 @@ def decrypt_data():
     data = request.get_json() or {}
     admin_key = data.get('admin_key')
     
-    # SOLUCIÓN: Usar la función centralizada de verificación
+    # Verificar contra TU estructura Firestore
     is_valid, msg = verify_admin_key(admin_key)
     if not is_valid:
         return jsonify({'ok': False, 'msg': msg}), 401
@@ -356,7 +398,7 @@ def decrypt_data():
     try:
         users_snap = db_admin.collection('Usuarios').get()
         
-        # Derivar la clave para descifrar usando la misma contraseña de administrador
+        # Derivar la clave para descifrar usando la clave admin
         key = derive_key_from_password(admin_key)
         
         decrypted_data = []
@@ -409,91 +451,7 @@ def decrypt_data():
         logger.exception("Error obteniendo datos")
         return jsonify({'ok': False, 'msg': f'Error obteniendo datos: {str(e)}'}), 500
 
-# Endpoint para obtener registros de monitoreo
-@app.route('/get-monitoring', methods=['POST'])
-def get_monitoring():
-    # Verificar Authorization header
-    auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
-        return jsonify({'ok': False, 'msg': 'Authorization header missing or malformed'}), 401
-    
-    id_token = auth_header.split(' ', 1)[1]
-    valid_token, token_info = verify_id_token(id_token)
-    if not valid_token:
-        return jsonify({'ok': False, 'msg': 'Invalid idToken', 'detail': token_info}), 401
-
-    # Verificar que sea administrador
-    data = request.get_json() or {}
-    admin_key = data.get('admin_key')
-    
-    # SOLUCIÓN: Usar la función centralizada
-    is_valid, msg = verify_admin_key(admin_key)
-    if not is_valid:
-        return jsonify({'ok': False, 'msg': msg}), 401
-
-    # Obtener registros de monitoreo
-    try:
-        monitoring_ref = db_admin.collection('Monitoreo').order_by('timestamp', direction=firestore.Query.DESCENDING)
-        monitoring_snap = monitoring_ref.get()
-        
-        monitoring_data = []
-        for doc in monitoring_snap:
-            record = doc.to_dict()
-            record['id'] = doc.id
-            # Convertir timestamp a string legible
-            if 'timestamp' in record and hasattr(record['timestamp'], 'strftime'):
-                record['timestamp'] = record['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-            elif 'timestamp' in record:
-                # Si es un objeto Timestamp de Firestore
-                record['timestamp'] = record['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-            monitoring_data.append(record)
-        
-        return jsonify({
-            'ok': True,
-            'monitoringData': monitoring_data,
-            'total': len(monitoring_data)
-        })
-        
-    except Exception as e:
-        logger.exception("Error obteniendo datos de monitoreo")
-        return jsonify({'ok': False, 'msg': f'Error obteniendo monitoreo: {str(e)}'}), 500
-        
-
-# Endpoint para registrar acciones manualmente
-@app.route('/log-action', methods=['POST'])
-def log_action():
-    # Verificar Authorization header
-    auth_header = request.headers.get('Authorization', '')
-    if not auth_header.startswith('Bearer '):
-        return jsonify({'ok': False, 'msg': 'Authorization header missing or malformed'}), 401
-    
-    id_token = auth_header.split(' ', 1)[1]
-    valid_token, token_info = verify_id_token(id_token)
-    if not valid_token:
-        return jsonify({'ok': False, 'msg': 'Invalid idToken', 'detail': token_info}), 401
-
-    data = request.get_json() or {}
-    action = data.get('action', 'UNKNOWN_ACTION')
-    details = data.get('details', '')
-    
-    try:
-        user_email = token_info.get('email', 'unknown')
-        monitor_data = {
-            'user_email': user_email,
-            'action': action,
-            'timestamp': firestore.SERVER_TIMESTAMP,
-            'details': details,
-            'ip': request.remote_addr
-        }
-        db_admin.collection('Monitoreo').add(monitor_data)
-        
-        return jsonify({'ok': True, 'msg': 'Acción registrada correctamente'})
-        
-    except Exception as e:
-        logger.error(f"Error registrando acción: {e}")
-        return jsonify({'ok': False, 'msg': f'Error registrando acción: {str(e)}'}), 500
-
-# Endpoint para verificar permisos
+# Endpoint para verificar permisos admin
 @app.route('/verify-admin', methods=['POST'])
 def verify_admin():
     try:
@@ -528,10 +486,10 @@ def verify_admin():
             
         admin_key = data.get('admin_key', '').strip()
 
-        # SOLUCIÓN: Usar la función centralizada de verificación
+        # Verificar contra TU estructura Firestore
         is_valid, msg = verify_admin_key(admin_key)
         if not is_valid:
-            logger.warning(f"Intento fallido de verificación admin con clave: {admin_key}")
+            logger.warning(f"Intento fallido de verificación admin")
             return jsonify({"msg": msg}), 401
 
         logger.info("Verificación admin exitosa")
@@ -540,6 +498,33 @@ def verify_admin():
     except Exception as e:
         logger.exception("Error inesperado en verify-admin")
         return jsonify({"msg": "Error verificando credenciales", "error": str(e)}), 500
+
+# --- Endpoint para verificar estado de la configuración ---
+@app.route('/check-admin-config', methods=['GET'])
+def check_admin_config():
+    """
+    Endpoint para verificar si la configuración admin está correcta
+    """
+    try:
+        success, result = get_admin_key_from_firestore()
+        if success:
+            return jsonify({
+                'ok': True, 
+                'msg': 'Configuración admin encontrada',
+                'config_exists': True
+            })
+        else:
+            return jsonify({
+                'ok': False,
+                'msg': result,  # result contiene el mensaje de error
+                'config_exists': False
+            })
+    except Exception as e:
+        return jsonify({
+            'ok': False,
+            'msg': f'Error verificando configuración: {str(e)}',
+            'config_exists': False
+        })
 
         
 # --- Run ---
