@@ -7,7 +7,7 @@ import secrets
 import requests
 from io import BytesIO
 from typing import Tuple
-
+from firebase_admin import firestore
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import pandas as pd
@@ -282,6 +282,7 @@ def upload():
         "preview": processed
     })
 
+# Y modifica la función decrypt_data así:
 @app.route('/decrypt-data', methods=['POST'])
 def decrypt_data():
     # Verificar Authorization header
@@ -320,9 +321,8 @@ def decrypt_data():
         # Derivar clave de cifrado
         key = derive_key_from_password(admin_key)
         
-        # CORRECCIÓN: usar order_by en lugar de orderBy
-        users_ref = db_admin.collection('Usuarios').order_by('createdAt', direction=firestore.Query.DESCENDING)
-        users_snap = users_ref.get()
+        # Versión simple sin ordenamiento para evitar problemas
+        users_snap = db_admin.collection('Usuarios').get()
         
         decrypted_data = []
         for doc in users_snap:
