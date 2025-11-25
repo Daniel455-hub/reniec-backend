@@ -339,71 +339,74 @@ def decrypt_data():
                     'CORREO': user_data.get('CORREO', '')
                 }
                 
-                # DEBUG: Log para ver qué hay en los campos cifrados
-                logger.info(f"Procesando usuario {doc.id}:")
-                logger.info(f"  DNI_enc: {user_data.get('DNI_enc', '')[:50]}...")
-                logger.info(f"  FECHA_NAC_enc: {user_data.get('FECHA_NAC_enc', '')[:50]}...")
+                # DEBUG: Log para ver qué campos existen
+                logger.info(f"Campos disponibles para usuario {doc.id}: {list(user_data.keys())}")
                 
-                # Descifrar campos cifrados con manejo robusto de errores
-                try:
-                    dni_enc = user_data.get('DNI_enc', '')
-                    if dni_enc and dni_enc.strip():
+                # INTENTAR AMBOS FORMATOS: primero _enc, luego sin _enc
+                # DNI
+                dni_enc = user_data.get('DNI_enc') or user_data.get('DNI', '')
+                if dni_enc and dni_enc.strip():
+                    try:
                         decrypted_user['DNI'] = decrypt_aes_gcm(dni_enc, key)
-                    else:
-                        decrypted_user['DNI'] = ''
-                        logger.warning(f"DNI_enc vacío para usuario {doc.id}")
-                except Exception as e:
-                    logger.error(f"Error descifrando DNI para {doc.id}: {e}")
-                    decrypted_user['DNI'] = '[ERROR]'
-                    decryption_errors += 1
+                    except Exception as e:
+                        logger.error(f"Error descifrando DNI para {doc.id}: {e}")
+                        decrypted_user['DNI'] = dni_enc  # Mostrar como texto plano si falla el descifrado
+                        decryption_errors += 1
+                else:
+                    decrypted_user['DNI'] = ''
+                    logger.warning(f"DNI vacío para usuario {doc.id}")
                 
-                try:
-                    fecha_enc = user_data.get('FECHA_NAC_enc', '')
-                    if fecha_enc and fecha_enc.strip():
+                # FECHA_NAC
+                fecha_enc = user_data.get('FECHA_NAC_enc') or user_data.get('FECHA_NAC', '')
+                if fecha_enc and fecha_enc.strip():
+                    try:
                         decrypted_user['FECHA_NAC'] = decrypt_aes_gcm(fecha_enc, key)
-                    else:
-                        decrypted_user['FECHA_NAC'] = ''
-                        logger.warning(f"FECHA_NAC_enc vacío para usuario {doc.id}")
-                except Exception as e:
-                    logger.error(f"Error descifrando FECHA_NAC para {doc.id}: {e}")
-                    decrypted_user['FECHA_NAC'] = '[ERROR]'
-                    decryption_errors += 1
+                    except Exception as e:
+                        logger.error(f"Error descifrando FECHA_NAC para {doc.id}: {e}")
+                        decrypted_user['FECHA_NAC'] = fecha_enc
+                        decryption_errors += 1
+                else:
+                    decrypted_user['FECHA_NAC'] = ''
+                    logger.warning(f"FECHA_NAC vacío para usuario {doc.id}")
                 
-                try:
-                    dpto_enc = user_data.get('DPTO_enc', '')
-                    if dpto_enc and dpto_enc.strip():
+                # DPTO
+                dpto_enc = user_data.get('DPTO_enc') or user_data.get('DPTO', '')
+                if dpto_enc and dpto_enc.strip():
+                    try:
                         decrypted_user['DPTO'] = decrypt_aes_gcm(dpto_enc, key)
-                    else:
-                        decrypted_user['DPTO'] = ''
-                        logger.warning(f"DPTO_enc vacío para usuario {doc.id}")
-                except Exception as e:
-                    logger.error(f"Error descifrando DPTO para {doc.id}: {e}")
-                    decrypted_user['DPTO'] = '[ERROR]'
-                    decryption_errors += 1
+                    except Exception as e:
+                        logger.error(f"Error descifrando DPTO para {doc.id}: {e}")
+                        decrypted_user['DPTO'] = dpto_enc
+                        decryption_errors += 1
+                else:
+                    decrypted_user['DPTO'] = ''
+                    logger.warning(f"DPTO vacío para usuario {doc.id}")
                 
-                try:
-                    telefono_enc = user_data.get('TELEFONO_enc', '')
-                    if telefono_enc and telefono_enc.strip():
+                # TELEFONO
+                telefono_enc = user_data.get('TELEFONO_enc') or user_data.get('TELEFONO', '')
+                if telefono_enc and telefono_enc.strip():
+                    try:
                         decrypted_user['TELEFONO'] = decrypt_aes_gcm(telefono_enc, key)
-                    else:
-                        decrypted_user['TELEFONO'] = ''
-                        logger.warning(f"TELEFONO_enc vacío para usuario {doc.id}")
-                except Exception as e:
-                    logger.error(f"Error descifrando TELEFONO para {doc.id}: {e}")
-                    decrypted_user['TELEFONO'] = '[ERROR]'
-                    decryption_errors += 1
+                    except Exception as e:
+                        logger.error(f"Error descifrando TELEFONO para {doc.id}: {e}")
+                        decrypted_user['TELEFONO'] = telefono_enc
+                        decryption_errors += 1
+                else:
+                    decrypted_user['TELEFONO'] = ''
+                    logger.warning(f"TELEFONO vacío para usuario {doc.id}")
                 
-                try:
-                    ubicacion_enc = user_data.get('UBICACION_enc', '')
-                    if ubicacion_enc and ubicacion_enc.strip():
+                # UBICACION
+                ubicacion_enc = user_data.get('UBICACION_enc') or user_data.get('UBICACION', '')
+                if ubicacion_enc and ubicacion_enc.strip():
+                    try:
                         decrypted_user['UBICACION'] = decrypt_aes_gcm(ubicacion_enc, key)
-                    else:
-                        decrypted_user['UBICACION'] = ''
-                        logger.warning(f"UBICACION_enc vacío para usuario {doc.id}")
-                except Exception as e:
-                    logger.error(f"Error descifrando UBICACION para {doc.id}: {e}")
-                    decrypted_user['UBICACION'] = '[ERROR]'
-                    decryption_errors += 1
+                    except Exception as e:
+                        logger.error(f"Error descifrando UBICACION para {doc.id}: {e}")
+                        decrypted_user['UBICACION'] = ubicacion_enc
+                        decryption_errors += 1
+                else:
+                    decrypted_user['UBICACION'] = ''
+                    logger.warning(f"UBICACION vacío para usuario {doc.id}")
                 
                 decrypted_data.append(decrypted_user)
                 
@@ -416,7 +419,7 @@ def decrypt_data():
         
         return jsonify({
             'ok': True,
-            'msg': f'{len(decrypted_data)} registros descifrados correctamente ({decryption_errors} errores)',
+            'msg': f'{len(decrypted_data)} registros procesados correctamente ({decryption_errors} errores)',
             'decryptedData': decrypted_data,
             'stats': {
                 'total': total_users,
@@ -427,7 +430,8 @@ def decrypt_data():
         
     except Exception as e:
         logger.exception("Error en descifrado masivo")
-        return jsonify({'ok': False, 'msg': f'Error descifrando datos: {str(e)}'}), 500
+        return jsonify({'ok': False, 'msg': f'Error procesando datos: {str(e)}'}), 500
+        
 # --- Run ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
