@@ -282,6 +282,97 @@ def upload():
         "preview": processed
     })
 
+@app.route('/decrypt-data', methods=['POST'])
+def decrypt_data():
+    # Verificar Authorization header
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'ok': False, 'msg': 'Authorization header missing or malformed'}), 401
+    
+    id_token = auth_header.split(' ', 1)[1]
+    valid_token, token_info = verify_id_token(id_token)
+    if not valid_token:
+        return jsonify({'ok': False, 'msg': 'Invalid idToken', 'detail': token_info}), 401
+
+    data = request.get_json() or {}
+    admin_key = data.get('admin_key')
+    
+    if not admin_key:
+        return jsonify({'ok': False, 'msg': 'Clave administradora requerida'}), 400
+
+    # Verificar clave administradora
+    try:
+        doc_ref = db_admin.collection('Permisos').document('Clave')
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return jsonify({'ok': False, 'msg': 'Configuración de permisos no encontrada'}), 500
+        
+        stored_key = doc.to_dict().get('Admin')
+        if admin_key != stored_key:
+            return jsonify({'ok': False, 'msg': 'Clave administradora incorrecta'}), 401
+    except Exception as e:
+        logger.exception("Error verificando clave administradora")
+        return jsonify({'ok': False, 'msg': 'Error verificando credenciales'}), 500
+
+    # Obtener y descifrar datos
+    try:
+        # Derivar clave de cifrado
+        key = derive_key_from_password(admin_key)
+        
+        # Obtener todos los usuarios
+        users_ref = db_admin.collection('Usuarios').orderBy('createdAt', 'desc')
+        users_snap = users_ref.get()
+        
+        decrypted_data = []
+        for doc in users_snap:
+            user_data = doc.to_dict()
+            
+            try:
+                decrypted_user = {
+                    'id': doc.id,
+                    'NOMBRES': user_data.get('NOMBRES', ''),
+                    'APELLIDOS': user_data.get('APELLIDOS', ''),
+                    'CORREO': user_data.get('CORREO', '')
+                }
+                
+                # Descifrar campos cifrados
+                dni_enc = user_data.get('DNI_enc', '')
+                if dni_enc:
+                    decrypted_user['DNI'] = decrypt_aes_gcm(dni_enc, key)
+                
+                fecha_enc = user_data.get('FECHA_NAC_enc', '')
+                if fecha_enc:
+                    decrypted_user['FECHA_NAC'] = decrypt_aes_gcm(fecha_enc, key)
+                
+                dpto_enc = user_data.get('DPTO_enc', '')
+                if dpto_enc:
+                    decrypted_user['DPTO'] = decrypt_aes_gcm(dpto_enc, key)
+                
+                telefono_enc = user_data.get('TELEFONO_enc', '')
+                if telefono_enc:
+                    decrypted_user['TELEFONO'] = decrypt_aes_gcm(telefono_enc, key)
+                
+                ubicacion_enc = user_data.get('UBICACION_enc', '')
+                if ubicacion_enc:
+                    decrypted_user['UBICACION'] = decrypt_aes_gcm(ubicacion_enc, key)
+                
+                decrypted_data.append(decrypted_user)
+                
+            except Exception as e:
+                logger.warning(f"Error descifrando usuario {doc.id}: {e}")
+                continue
+        
+        return jsonify({
+            'ok': True,
+            'msg': f'{len(decrypted_data)} registros descifrados correctamente',
+            'decryptedData': decrypted_data
+        })
+        
+    except Exception as e:
+        logger.exception("Error en descifrado masivo")
+        return jsonify({'ok': False, 'msg': f'Error descifrando datos: {str(e)}'}), 500
+
 # --- Run ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
