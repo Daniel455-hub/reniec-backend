@@ -267,6 +267,7 @@ def upload():
         logger.info("No reCAPTCHA token provided; proceeding because idToken was valid")
 
     # file
+    # file
     if "file" not in request.files:
         return jsonify({"ok": False, "msg": "No file uploaded"}), 400
     file = request.files["file"]
@@ -281,18 +282,20 @@ def upload():
     if missing:
         return jsonify({"ok": False, "msg": f"Missing columns: {missing}"}), 400
 
-    # Obtener clave admin desde TU estructura Firestore para encriptación
-    try:
+    # OPCIÓN: Decidir si cifrar o no los datos
+    # Por ahora, vamos a guardar los datos en claro
+    ENCRYPT_DATA = False  # Cambiar a True si quieres cifrar
+
+    if ENCRYPT_DATA:
+        # Código de cifrado (el que ya tienes)
         success, admin_key = get_admin_key_from_firestore()
         if not success:
             logger.error(f"Error obteniendo clave admin: {admin_key}")
             return jsonify({"ok": False, "msg": "Error de configuración del servidor"}), 500
             
         key = derive_key_from_password(admin_key)
-
-    except Exception as e:
-        logger.exception("Error obteniendo clave admin desde Firestore")
-        return jsonify({"ok": False, "msg": "Error del servidor obteniendo configuración"}), 500
+    else:
+        key = None  # No usaremos cifrado
 
     if db_admin is None:
         logger.error("Firestore admin client unavailable")
@@ -308,30 +311,45 @@ def upload():
             apellidos = str(row.get("APELLIDOS", "") or "").strip()
             correo = str(row.get("CORREO", "") or "").strip()
 
-            # fields to encrypt
+            # fields to encrypt or keep plain
             dni_raw = str(row.get("DNI", "") or "").strip()
             fecha_raw = str(row.get("FECHA_NAC", "") or "").strip()
             dpto_raw = str(row.get("DPTO", "") or "").strip()
             telefono_raw = str(row.get("TELEFONO", "") or "").strip()
             ubic_raw = str(row.get("UBICACION", "") or "").strip()
 
-            dni_enc = encrypt_aes_gcm(dni_raw, key) if dni_raw != '' else ''
-            fecha_enc = encrypt_aes_gcm(fecha_raw, key) if fecha_raw != '' else ''
-            dpto_enc = encrypt_aes_gcm(dpto_raw, key) if dpto_raw != '' else ''
-            telefono_enc = encrypt_aes_gcm(telefono_raw, key) if telefono_raw != '' else ''
-            ubic_enc = encrypt_aes_gcm(ubic_raw, key) if ubic_raw != '' else ''
+            if ENCRYPT_DATA and key:
+                # Cifrar datos
+                dni_enc = encrypt_aes_gcm(dni_raw, key) if dni_raw != '' else ''
+                fecha_enc = encrypt_aes_gcm(fecha_raw, key) if fecha_raw != '' else ''
+                dpto_enc = encrypt_aes_gcm(dpto_raw, key) if dpto_raw != '' else ''
+                telefono_enc = encrypt_aes_gcm(telefono_raw, key) if telefono_raw != '' else ''
+                ubic_enc = encrypt_aes_gcm(ubic_raw, key) if ubic_raw != '' else ''
 
-            doc_obj = {
-                "DNI_enc": dni_enc,
-                "NOMBRES": nombres,
-                "APELLIDOS": apellidos,
-                "FECHA_NAC_enc": fecha_enc,
-                "DPTO_enc": dpto_enc,
-                "CORREO": correo,
-                "TELEFONO_enc": telefono_enc,
-                "UBICACION_enc": ubic_enc,
-                "createdAt": admin_firestore.SERVER_TIMESTAMP
-            }
+                doc_obj = {
+                    "DNI_enc": dni_enc,
+                    "NOMBRES": nombres,
+                    "APELLIDOS": apellidos,
+                    "FECHA_NAC_enc": fecha_enc,
+                    "DPTO_enc": dpto_enc,
+                    "CORREO": correo,
+                    "TELEFONO_enc": telefono_enc,
+                    "UBICACION_enc": ubic_enc,
+                    "createdAt": admin_firestore.SERVER_TIMESTAMP
+                }
+            else:
+                # Guardar en claro
+                doc_obj = {
+                    "DNI": dni_raw,
+                    "NOMBRES": nombres,
+                    "APELLIDOS": apellidos,
+                    "FECHA_NAC": fecha_raw,
+                    "DPTO": dpto_raw,
+                    "CORREO": correo,
+                    "TELEFONO": telefono_raw,
+                    "UBICACION": ubic_raw,
+                    "createdAt": admin_firestore.SERVER_TIMESTAMP
+                }
 
             db_admin.collection("Usuarios").add(doc_obj)
             processed.append(doc_obj)
@@ -355,7 +373,7 @@ def upload():
 
     return jsonify({
         "ok": True,
-        "msg": f"{success_count} records processed and encrypted, {failed} failed",
+        "msg": f"{success_count} records processed{' and encrypted' if ENCRYPT_DATA else ''}, {failed} failed",
         "preview": processed
     })
 
@@ -374,7 +392,7 @@ def decrypt_data():
     data = request.get_json() or {}
     admin_key = data.get('admin_key')
     
-    # Verificar contra TU estructura Firestore
+    # Verificar clave admin
     is_valid, msg = verify_admin_key(admin_key)
     if not is_valid:
         return jsonify({'ok': False, 'msg': msg}), 401
@@ -394,57 +412,70 @@ def decrypt_data():
     except Exception as e:
         logger.error(f"Error registrando acceso en monitoreo: {e}")
 
-    # Obtener y descifrar datos
+    # Obtener y procesar datos
     try:
         users_snap = db_admin.collection('Usuarios').get()
         
-        # Derivar la clave para descifrar usando la clave admin
-        key = derive_key_from_password(admin_key)
-        
         decrypted_data = []
-        errors = 0
         
         for doc in users_snap:
             user_data = doc.to_dict()
             
-            try:
-                # Descifrar los campos cifrados
-                dni_dec = decrypt_aes_gcm(user_data.get('DNI_enc', ''), key)
-                fecha_dec = decrypt_aes_gcm(user_data.get('FECHA_NAC_enc', ''), key)
-                dpto_dec = decrypt_aes_gcm(user_data.get('DPTO_enc', ''), key)
-                telefono_dec = decrypt_aes_gcm(user_data.get('TELEFONO_enc', ''), key)
-                ubic_dec = decrypt_aes_gcm(user_data.get('UBICACION_enc', ''), key)
-                
+            # DETECTAR SI LOS DATOS ESTÁN CIFRADOS O NO
+            # Si existe el campo DNI_enc, asumimos que los datos están cifrados
+            # Si no, usamos los campos en claro
+            has_encrypted_data = 'DNI_enc' in user_data
+            
+            if has_encrypted_data:
+                # ===== DATOS CIFRADOS =====
+                try:
+                    # Descifrar los campos cifrados
+                    dni_dec = decrypt_aes_gcm(user_data.get('DNI_enc', ''), key)
+                    fecha_dec = decrypt_aes_gcm(user_data.get('FECHA_NAC_enc', ''), key)
+                    dpto_dec = decrypt_aes_gcm(user_data.get('DPTO_enc', ''), key)
+                    telefono_dec = decrypt_aes_gcm(user_data.get('TELEFONO_enc', ''), key)
+                    ubic_dec = decrypt_aes_gcm(user_data.get('UBICACION_enc', ''), key)
+                    
+                    decrypted_user = {
+                        'id': doc.id,
+                        'DNI': dni_dec,
+                        'NOMBRES': user_data.get('NOMBRES', ''),
+                        'APELLIDOS': user_data.get('APELLIDOS', ''),
+                        'FECHA_NAC': fecha_dec,
+                        'DPTO': dpto_dec,
+                        'CORREO': user_data.get('CORREO', ''),
+                        'TELEFONO': telefono_dec,
+                        'UBICACION': ubic_dec
+                    }
+                    
+                    decrypted_data.append(decrypted_user)
+                    
+                except Exception as e:
+                    logger.warning(f"Error descifrando usuario {doc.id}: {e}")
+                    continue
+            else:
+                # ===== DATOS EN CLARO =====
                 decrypted_user = {
                     'id': doc.id,
-                    'DNI': dni_dec,
+                    'DNI': user_data.get('DNI', ''),
                     'NOMBRES': user_data.get('NOMBRES', ''),
                     'APELLIDOS': user_data.get('APELLIDOS', ''),
-                    'FECHA_NAC': fecha_dec,
-                    'DPTO': dpto_dec,
+                    'FECHA_NAC': user_data.get('FECHA_NAC', ''),
+                    'DPTO': user_data.get('DPTO', ''),
                     'CORREO': user_data.get('CORREO', ''),
-                    'TELEFONO': telefono_dec,
-                    'UBICACION': ubic_dec
+                    'TELEFONO': user_data.get('TELEFONO', ''),
+                    'UBICACION': user_data.get('UBICACION', '')
                 }
                 
                 decrypted_data.append(decrypted_user)
-                
-            except Exception as e:
-                logger.warning(f"Error descifrando usuario {doc.id}: {e}")
-                errors += 1
-                continue
         
-        logger.info(f"Descifrado completado: {len(decrypted_data)} usuarios, {errors} errores")
+        logger.info(f"Procesamiento completado: {len(decrypted_data)} usuarios")
         
         return jsonify({
             'ok': True,
-            'msg': f'{len(decrypted_data)} registros descifrados, {errors} errores',
+            'msg': f'{len(decrypted_data)} registros procesados',
             'decryptedData': decrypted_data,
-            'stats': {
-                'total': len(decrypted_data),
-                'successful': len(decrypted_data),
-                'errors': errors
-            }
+            'dataType': 'encrypted' if has_encrypted_data else 'plain'
         })
         
     except Exception as e:
