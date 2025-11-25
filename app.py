@@ -526,6 +526,54 @@ def check_admin_config():
             'config_exists': False
         })
 
+# Agrega este endpoint a tu app.py
+@app.route('/debug-auth', methods=['POST'])
+def debug_auth():
+    """Endpoint para debug de autenticación"""
+    try:
+        # Verificar headers
+        auth_header = request.headers.get('Authorization', '')
+        print(f"📨 Authorization Header: {auth_header}")
+        
+        if not auth_header.startswith('Bearer '):
+            return jsonify({
+                'error': 'Formato de header incorrecto',
+                'received_header': auth_header,
+                'expected_format': 'Bearer <token>'
+            }), 401
+
+        # Extraer token
+        id_token = auth_header.split(' ', 1)[1]
+        print(f"🔐 Token recibido (primeros 50 chars): {id_token[:50]}...")
+        
+        if not id_token:
+            return jsonify({'error': 'Token vacío'}), 401
+
+        # Verificar token
+        try:
+            decoded_token = fb_auth.verify_id_token(id_token)
+            print(f"✅ Token verificado - Email: {decoded_token.get('email')}")
+            return jsonify({
+                'status': 'success',
+                'user_email': decoded_token.get('email'),
+                'user_id': decoded_token.get('uid'),
+                'token_issued_at': decoded_token.get('iat'),
+                'token_expires_at': decoded_token.get('exp')
+            })
+        except Exception as e:
+            print(f"❌ Error verificando token: {str(e)}")
+            return jsonify({
+                'error': 'Token inválido',
+                'details': str(e)
+            }), 401
+
+    except Exception as e:
+        print(f"💥 Error inesperado: {str(e)}")
+        return jsonify({
+            'error': 'Error interno del servidor',
+            'details': str(e)
+        }), 500
+
         
 # --- Run ---
 if __name__ == "__main__":
