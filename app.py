@@ -330,45 +330,56 @@ def decrypt_data():
     except Exception as e:
         logger.error(f"Error registrando acceso en monitoreo: {e}")
 
-    # Obtener datos (sin intentar descifrar ya que están en texto plano)
+    # Obtener y descifrar datos
     try:
         users_snap = db_admin.collection('Usuarios').get()
         
+        # Derivar la clave para descifrar
+        key = derive_key_from_password(admin_key)
+        
         decrypted_data = []
+        errors = 0
         
         for doc in users_snap:
             user_data = doc.to_dict()
             
             try:
-                # Los datos ya están en texto plano, simplemente extraerlos
+                # Descifrar los campos cifrados
+                dni_dec = decrypt_aes_gcm(user_data['DNI_enc'], key) if user_data.get('DNI_enc') else ''
+                fecha_dec = decrypt_aes_gcm(user_data['FECHA_NAC_enc'], key) if user_data.get('FECHA_NAC_enc') else ''
+                dpto_dec = decrypt_aes_gcm(user_data['DPTO_enc'], key) if user_data.get('DPTO_enc') else ''
+                telefono_dec = decrypt_aes_gcm(user_data['TELEFONO_enc'], key) if user_data.get('TELEFONO_enc') else ''
+                ubic_dec = decrypt_aes_gcm(user_data['UBICACION_enc'], key) if user_data.get('UBICACION_enc') else ''
+                
                 decrypted_user = {
                     'id': doc.id,
-                    'DNI': user_data.get('DNI', ''),
+                    'DNI': dni_dec,
                     'NOMBRES': user_data.get('NOMBRES', ''),
                     'APELLIDOS': user_data.get('APELLIDOS', ''),
-                    'FECHA_NAC': user_data.get('FECHA_NAC', ''),
-                    'DPTO': user_data.get('DPTO', ''),
+                    'FECHA_NAC': fecha_dec,
+                    'DPTO': dpto_dec,
                     'CORREO': user_data.get('CORREO', ''),
-                    'TELEFONO': user_data.get('TELEFONO', ''),
-                    'UBICACION': user_data.get('UBICACION', '')
+                    'TELEFONO': telefono_dec,
+                    'UBICACION': ubic_dec
                 }
                 
                 decrypted_data.append(decrypted_user)
                 
             except Exception as e:
-                logger.warning(f"Error procesando usuario {doc.id}: {e}")
+                logger.warning(f"Error descifrando usuario {doc.id}: {e}")
+                errors += 1
                 continue
         
-        logger.info(f"Proceso completado: {len(decrypted_data)} usuarios procesados")
+        logger.info(f"Descifrado completado: {len(decrypted_data)} usuarios, {errors} errores")
         
         return jsonify({
             'ok': True,
-            'msg': f'{len(decrypted_data)} registros cargados correctamente',
+            'msg': f'{len(decrypted_data)} registros descifrados, {errors} errores',
             'decryptedData': decrypted_data,
             'stats': {
                 'total': len(decrypted_data),
                 'successful': len(decrypted_data),
-                'errors': 0
+                'errors': errors
             }
         })
         
